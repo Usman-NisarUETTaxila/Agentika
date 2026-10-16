@@ -1,3 +1,14 @@
-fastapi>=0.115,<1.0
-uvicorn[standard]>=0.30,<1.0
-pydantic-settings>=2.4,<3.0
+pymupdf
+pdfplumber
+qdrant-client
+sentence-transformers<3.0.0
+transformers<5.0.0
+llama-index-core
+llama-index-embeddings-huggingface
+google-genai
+langchain
+langchain-google-genai
+python-dotenv
+streamlit
+djangorestframework
+django==5.2.13
