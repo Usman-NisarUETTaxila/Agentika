@@ -1,2 +1,2 @@
-# Agentika
-This repo is for our Agentika 2.0 Hackathon at Nascon 26
+# InsightForge
+This is the repo of Project that is RAG based Agentic Research System.
