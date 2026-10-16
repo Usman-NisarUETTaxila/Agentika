@@ -33,16 +33,17 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 from qdrant_client import models
-from sentence_transformers import SentenceTransformer
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 from llama_index.core import Document
 from .doc_parser import parse_document
 from .qdrant_conn import ensure_source_index, get_client
+from .gemini_embed import (
+    EMBED_DIM,
+    GeminiLlamaEmbedding,
+    embed_documents,
+)
 
-encoder = SentenceTransformer("all-MiniLM-L6-v2")
-embed_model = HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
-all_points = []
+embed_model = GeminiLlamaEmbedding()
 
 semantic_parser = SemanticSplitterNodeParser(
     buffer_size=1,
@@ -58,25 +59,33 @@ def _get_semantic_chunks(text):
 
 def _vectorize_points(data):
     import uuid
-    points = []
+    records = []  # (chunk_text, original_point)
 
     for point in data:
         for chunk in _get_semantic_chunks(point["text"]):
-            points.append(
-                models.PointStruct(
-                    id=uuid.uuid4().hex,
-                    vector={'semantic': encoder.encode(chunk).tolist()},
-                    payload={
-                        "text": chunk,
-                        "source": point["source"],
-                        "page": point["page"],
-                        "element_type": point["element_type"],
-                        "level": point["level"]
-                    }
-                )
-            )
+            if chunk.strip():  # the embedding API rejects empty strings
+                records.append((chunk, point))
 
-    return points
+    if not records:
+        return []
+
+    # One batched API call per ~50 chunks instead of one call per chunk.
+    vectors = embed_documents([chunk for chunk, _ in records])
+
+    return [
+        models.PointStruct(
+            id=uuid.uuid4().hex,
+            vector={'semantic': vec},
+            payload={
+                "text": chunk,
+                "source": point["source"],
+                "page": point["page"],
+                "element_type": point["element_type"],
+                "level": point["level"]
+            }
+        )
+        for (chunk, point), vec in zip(records, vectors)
+    ]
 
 def _upload_to_qdrant(points, collection_name="Docs"):
     client = get_client()  # QDRANT_URL / QDRANT_API_KEY from the environment
@@ -85,11 +94,21 @@ def _upload_to_qdrant(points, collection_name="Docs"):
         client.create_collection(
             collection_name=collection_name,
             vectors_config={
-                'fixed': models.VectorParams(size=encoder.get_embedding_dimension(), distance=models.Distance.COSINE),
-                'sentence': models.VectorParams(size=encoder.get_embedding_dimension(), distance=models.Distance.COSINE),
-                'semantic': models.VectorParams(size=encoder.get_embedding_dimension(), distance=models.Distance.COSINE),
+                'fixed': models.VectorParams(size=EMBED_DIM, distance=models.Distance.COSINE),
+                'sentence': models.VectorParams(size=EMBED_DIM, distance=models.Distance.COSINE),
+                'semantic': models.VectorParams(size=EMBED_DIM, distance=models.Distance.COSINE),
             },
         )
+    else:
+        # An existing collection built with MiniLM has 384-dim vectors and
+        # cannot accept Gemini vectors.
+        vc = client.get_collection(collection_name).config.params.vectors
+        if isinstance(vc, dict) and "semantic" in vc and vc["semantic"].size != EMBED_DIM:
+            raise RuntimeError(
+                f"Collection '{collection_name}' has {vc['semantic'].size}-dim vectors but "
+                f"the Gemini model is configured for {EMBED_DIM}. Delete the collection "
+                f"(client.delete_collection('{collection_name}')) and re-ingest."
+            )
 
     # Qdrant Cloud strict mode needs an index on any field used in a filter
     # (answer-from-chosen-context search and per-document delete use `source`).
@@ -239,6 +258,7 @@ def ingest_folder(
     tasks = [(p, doc_type, id_patterns, include_tables, cache_dir) for p in paths]
 
     results: dict[str, dict] = {}
+    all_points: list[dict] = []
     n_cached = 0
     t0 = time.time()
 

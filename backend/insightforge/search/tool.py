@@ -37,8 +37,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from qdrant_client import models
-from sentence_transformers import SentenceTransformer
 
+from .gemini_embed import embed_query
 from .qdrant_conn import ensure_source_index as _ensure_source_index
 from .qdrant_conn import get_client as _qdrant
 
@@ -60,8 +60,6 @@ except ImportError:  # python-dotenv not installed: rely on real environment var
 # "gemini-3.1-flash-lite" is a cheaper alternative.)
 LLM_MODEL = os.getenv("CONTEXT_LLM_MODEL", "gemini-3.6-flash")
 LLM_PROVIDER = "google_genai"
-
-encoder = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 @lru_cache(maxsize=1)
@@ -115,7 +113,7 @@ def query_db(
 
     results = client.query_points(
         collection_name=collectionName,
-        query=encoder.encode(query).tolist(),
+        query=embed_query(query),
         using="semantic",
         query_filter=query_filter,
         limit=limit,
