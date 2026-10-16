@@ -26,6 +26,8 @@ dist-ssr
 
 ## Backend
 __pycache__/
+*.db
+*.sqlite3
 
 
 ## Environment file
